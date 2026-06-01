@@ -1084,7 +1084,7 @@ bot.action(/withdraw_(.+)/, async (ctx) => {
 bot.action('withdraw_custom', async (ctx) => {
     const userId = ctx.from.id.toString();
     await ctx.answerCbQuery();
-    withdrawSessions.set(userId, { currency: 'USDT', step: 'waitingForCustomAmount', createdAt: Date.now() });
+    withdrawSessions.set(userId, { step: 'waitingForCustomAmount', createdAt: Date.now() });
     await ctx.reply('✏️ Enter custom amount (number only):\n\nExample: 100', { parse_mode: 'HTML' });
 });
 
