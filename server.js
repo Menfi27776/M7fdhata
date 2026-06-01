@@ -1056,7 +1056,10 @@ bot.action(/withdraw_(.+)/, async (ctx) => {
     console.log(`💸 Withdraw amount selected: ${amount} USDT for ${userId}`);
     
     const session = withdrawSessions.get(userId);
-    if (!session) return;
+    if (!session) {
+        await ctx.reply('❌ Session expired. Please start over.');
+        return;
+    }
     
     const user = await getUser(userId);
     const balance = user?.balance || 0;
@@ -1066,7 +1069,7 @@ bot.action(/withdraw_(.+)/, async (ctx) => {
         return;
     }
     
-    withdrawSessions.set(userId, { ...session, amount, step: 'confirmWithdraw' });
+    withdrawSessions.set(userId, { ...session, amount: amount, step: 'confirmWithdraw' });
     
     const keyboard = {
         inline_keyboard: [
@@ -1084,8 +1087,19 @@ bot.action(/withdraw_(.+)/, async (ctx) => {
 bot.action('withdraw_custom', async (ctx) => {
     const userId = ctx.from.id.toString();
     await ctx.answerCbQuery();
-    withdrawSessions.set(userId, { step: 'waitingForCustomAmount', createdAt: Date.now() });
-    await ctx.reply('✏️ Enter custom amount (number only):\n\nExample: 100', { parse_mode: 'HTML' });
+    console.log(`✏️ Custom amount requested for ${userId}`);
+    
+    // ✅ Save session correctly for custom amount
+    withdrawSessions.set(userId, { 
+        step: 'waitingForCustomAmount',
+        currency: 'USDT',
+        createdAt: Date.now()
+    });
+    
+    await ctx.reply(
+        `✏️ ENTER CUSTOM AMOUNT\n\nSend the amount as a number.\n\nExample: 75\n\nMinimum: ${APP_CONFIG.minWithdrawUSDT} USDT\nMaximum: ${APP_CONFIG.maxWithdrawUSDT} USDT`,
+        { parse_mode: 'HTML' }
+    );
 });
 
 bot.action('confirm_withdraw', async (ctx) => {
@@ -1334,7 +1348,7 @@ bot.on('text', async (ctx) => {
             return;
         }
         
-        // ✅ Fix: Save complete session with currency and amount
+        // ✅ Save complete session with currency and amount
         withdrawSessions.set(userId, { 
             currency: 'USDT', 
             amount: amount, 
