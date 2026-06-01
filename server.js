@@ -678,17 +678,18 @@ function getAdminKeyboard() {
 }
 
 function getWithdrawAmountKeyboard(balance) {
-    const suggestions = [
-        { text: `${APP_CONFIG.minWithdrawUSDT} USDT`, callback_data: `withdraw_${APP_CONFIG.minWithdrawUSDT}` },
-        { text: `${Math.floor(balance / 4)} USDT`, callback_data: `withdraw_${Math.floor(balance / 4)}` },
-        { text: `${Math.floor(balance / 2)} USDT`, callback_data: `withdraw_${Math.floor(balance / 2)}` },
-        { text: `${balance} USDT`, callback_data: `withdraw_${balance}` }
-    ];
+    // Professional horizontal layout
     return {
         inline_keyboard: [
-            suggestions.slice(0, 2),
-            suggestions.slice(2, 4),
-            [{ text: '✏️ CUSTOM AMOUNT', callback_data: 'withdraw_custom' }]
+            [
+                { text: `💰 ${APP_CONFIG.minWithdrawUSDT}`, callback_data: `withdraw_${APP_CONFIG.minWithdrawUSDT}` },
+                { text: `💰 100`, callback_data: `withdraw_100` },
+                { text: `💰 250`, callback_data: `withdraw_250` },
+                { text: `💰 500`, callback_data: `withdraw_500` }
+            ],
+            [
+                { text: `✏️ Custom amount`, callback_data: 'withdraw_custom' }
+            ]
         ]
     };
 }
@@ -893,19 +894,7 @@ bot.hears('💸 WITHDRAW', async (ctx) => {
         return;
     }
     
-    const suggestions = [
-        { text: `${APP_CONFIG.minWithdrawUSDT} USDT`, callback_data: `withdraw_${APP_CONFIG.minWithdrawUSDT}` },
-        { text: `100 USDT`, callback_data: `withdraw_100` },
-        { text: `250 USDT`, callback_data: `withdraw_250` },
-        { text: `500 USDT`, callback_data: `withdraw_500` }
-    ];
-    
-    const keyboard = {
-        inline_keyboard: [
-            suggestions.map(s => ({ text: s.text, callback_data: s.callback_data })),
-            [{ text: '✏️ CUSTOM', callback_data: 'withdraw_custom' }]
-        ]
-    };
+    const keyboard = getWithdrawAmountKeyboard(user.balance || 0);
     
     await ctx.reply(
         `💸 WITHDRAWAL\n\nBalance: ${formatUSD(user.balance || 0)}\nMinimum: ${APP_CONFIG.minWithdrawUSDT} USDT\nWallet: <code>${user.walletAddress.substring(0, 10)}...${user.walletAddress.substring(38)}</code>\n\nChoose amount:`,
@@ -1095,7 +1084,7 @@ bot.action(/withdraw_(.+)/, async (ctx) => {
 bot.action('withdraw_custom', async (ctx) => {
     const userId = ctx.from.id.toString();
     await ctx.answerCbQuery();
-    withdrawSessions.set(userId, { step: 'waitingForCustomAmount', createdAt: Date.now() });
+    withdrawSessions.set(userId, { currency: 'USDT', step: 'waitingForCustomAmount', createdAt: Date.now() });
     await ctx.reply('✏️ Enter custom amount (number only):\n\nExample: 100', { parse_mode: 'HTML' });
 });
 
@@ -1341,11 +1330,17 @@ bot.on('text', async (ctx) => {
         const balance = user?.balance || 0;
         
         if (isNaN(amount) || amount < APP_CONFIG.minWithdrawUSDT || amount > APP_CONFIG.maxWithdrawUSDT || amount > balance) {
-            await ctx.reply(`❌ Invalid. Min: ${APP_CONFIG.minWithdrawUSDT}, Max: ${APP_CONFIG.maxWithdrawUSDT}, Balance: ${formatUSD(balance)}`, { parse_mode: 'HTML' });
+            await ctx.reply(`❌ Invalid amount.\n\nMin: ${APP_CONFIG.minWithdrawUSDT} USDT\nMax: ${APP_CONFIG.maxWithdrawUSDT} USDT\nYour balance: ${formatUSD(balance)}`, { parse_mode: 'HTML' });
             return;
         }
         
-        withdrawSessions.set(userId, { ...session, amount, step: 'confirmWithdraw' });
+        // ✅ Fix: Save complete session with currency and amount
+        withdrawSessions.set(userId, { 
+            currency: 'USDT', 
+            amount: amount, 
+            step: 'confirmWithdraw',
+            createdAt: Date.now()
+        });
         
         const keyboard = {
             inline_keyboard: [
@@ -1355,7 +1350,7 @@ bot.on('text', async (ctx) => {
         };
         
         await ctx.reply(
-            `✅ CONFIRM WITHDRAWAL\n\nAmount: ${formatUSD(amount)}\nWallet: <code>${user.walletAddress.substring(0, 10)}...${user.walletAddress.substring(38)}</code>`,
+            `✅ CONFIRM WITHDRAWAL\n\nAmount: ${formatUSD(amount)}\nWallet: <code>${user.walletAddress.substring(0, 10)}...${user.walletAddress.substring(38)}</code>\n\nClick CONFIRM to submit.`,
             { parse_mode: 'HTML', reply_markup: keyboard }
         );
         return;
