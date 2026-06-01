@@ -12,12 +12,18 @@ const PORT = process.env.PORT || 3000;
 // ============================================================================
 
 let serviceAccount = null;
+let firebaseWebConfig = {};
 let ADMIN_ID = null;
 let ADMIN_PASSWORD = null;
 let BOT_TOKEN = null;
 let WITHDRAWAL_GROUP_ID = null;
+let OWNER_WALLET = null;
 let APP_URL = null;
 let BOT_USERNAME = null;
+
+console.log('╔════════════════════════════════════════════════════════════════╗');
+console.log('║              🔐 LOADING CONFIGURATION                           ║');
+console.log('╚════════════════════════════════════════════════════════════════╝');
 
 // Load Firebase Admin Key
 try {
@@ -26,10 +32,23 @@ try {
         serviceAccount = JSON.parse(fs.readFileSync(firebasePath, 'utf8'));
         console.log('✅ Firebase Admin key loaded');
     } else {
-        console.log('⚠️ firebase-admin-key.json not found at:', firebasePath);
+        console.log('⚠️ firebase-admin-key.json not found');
     }
 } catch (error) {
     console.error('❌ Firebase Admin key error:', error.message);
+}
+
+// Load Firebase Web Config
+try {
+    const configPath = '/etc/secrets/firebase-web-config.json';
+    if (fs.existsSync(configPath)) {
+        firebaseWebConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        console.log('✅ Firebase Web config loaded');
+    } else {
+        console.log('⚠️ firebase-web-config.json not found');
+    }
+} catch (error) {
+    console.error('❌ Firebase Web config error:', error.message);
 }
 
 // Load Admin Config
@@ -39,7 +58,9 @@ try {
         const adminConfig = JSON.parse(fs.readFileSync(adminPath, 'utf8'));
         ADMIN_ID = adminConfig.admin_id;
         ADMIN_PASSWORD = adminConfig.admin_password;
-        console.log('✅ Admin config loaded | ID:', ADMIN_ID);
+        console.log(`✅ Admin config loaded | ID: ${ADMIN_ID}`);
+    } else {
+        console.log('⚠️ admin-config.json not found');
     }
 } catch (error) {
     console.error('❌ Admin config error:', error.message);
@@ -48,7 +69,16 @@ try {
 // Environment Variables
 BOT_TOKEN = process.env.BOT_TOKEN;
 WITHDRAWAL_GROUP_ID = process.env.WITHDRAWAL_GROUP_ID;
+OWNER_WALLET = process.env.OWNER_WALLET;
 APP_URL = process.env.APP_URL;
+
+console.log('\n📋 ENVIRONMENT VARIABLES:');
+console.log(`   BOT_TOKEN: ${BOT_TOKEN ? '✅ Configured' : '❌ Missing'}`);
+console.log(`   WITHDRAWAL_GROUP_ID: ${WITHDRAWAL_GROUP_ID ? '✅ Configured' : '⚠️ Optional'}`);
+console.log(`   OWNER_WALLET: ${OWNER_WALLET ? '✅ Configured' : '⚠️ Optional'}`);
+console.log(`   APP_URL: ${APP_URL ? '✅ Configured' : '⚠️ Optional'}`);
+console.log(`   ADMIN_ID: ${ADMIN_ID ? '✅ Configured' : '❌ Missing'}`);
+console.log(`   ADMIN_PASSWORD: ${ADMIN_PASSWORD ? '✅ Configured' : '❌ Missing'}`);
 
 // ============================================================================
 // 2. ⚙️ APPLICATION CONFIGURATION
@@ -59,28 +89,41 @@ const APP_CONFIG = {
     referralBonus: 5,
     minWithdrawUSDT: 50,
     maxWithdrawUSDT: 5000,
+    sessionTTL: 3600000,
+    adminSessionTTL: 86400000,
     syncInterval: 3600000,
+    cacheTTL: 3600000,
     rateLimitWindow: 60000,
-    rateLimitMax: 30
+    rateLimitMax: 30,
+    sessionCleanupInterval: 3600000
 };
 
+// Required Channels
 const REQUIRED_CHANNELS = [
     { name: 'Daily Airdrop X', username: '@Daily_AirdropX' },
     { name: 'Airdrop Master VIP', username: '@Airdrop_MasterVIP' },
     { name: 'Realfinance REFI', username: '@Realfinance_REFI' }
 ];
 
+// Social Links
+const SOCIAL_LINKS = [
+    { name: '📢 Daily Airdrop X', url: 'https://t.me/Daily_AirdropX', type: 'telegram' },
+    { name: '📢 Airdrop Master VIP', url: 'https://t.me/Airdrop_MasterVIP', type: 'telegram' },
+    { name: '📢 Realfinance REFI', url: 'https://t.me/Realfinance_REFI', type: 'telegram' },
+    { name: '🐦 Twitter (X)', url: 'https://twitter.com/Daily_AirdropX', type: 'twitter' }
+];
+
 // ============================================================================
-// 3. 🛠️ HELPER FUNCTIONS
+// 3. 🎨 PROFESSIONAL FORMATTING (HTML ONLY)
 // ============================================================================
+
+function formatUSD(amount) {
+    return `$${amount.toFixed(2)} USDT`;
+}
 
 function escapeHtml(text) {
     if (!text) return '';
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function formatUSD(amount) {
-    return `$${amount.toFixed(2)} USDT`;
 }
 
 function isValidBEP20(address) {
@@ -88,7 +131,9 @@ function isValidBEP20(address) {
 }
 
 function isAdmin(userId) {
-    return userId === ADMIN_ID;
+    const result = userId === ADMIN_ID;
+    if (result) console.log(`👑 Admin access granted for: ${userId}`);
+    return result;
 }
 
 // ============================================================================
@@ -108,6 +153,7 @@ class RateLimiter {
         const validRequests = userRequests.filter(timestamp => now - timestamp < this.windowMs);
         
         if (validRequests.length >= this.maxRequests) {
+            console.log(`⚠️ Rate limit exceeded for: ${userId}`);
             return true;
         }
         
@@ -133,89 +179,7 @@ const rateLimiter = new RateLimiter(APP_CONFIG.rateLimitWindow, APP_CONFIG.rateL
 setInterval(() => rateLimiter.cleanup(), 3600000);
 
 // ============================================================================
-// 5. 💾 SMART CACHE SYSTEM
-// ============================================================================
-
-class SmartCache {
-    constructor() {
-        this.cache = new Map();
-        this.dirtyUsers = new Set();
-    }
-
-    get(userId) {
-        const user = this.cache.get(userId);
-        if (user) {
-            user.lastAccess = Date.now();
-            return { ...user };
-        }
-        return null;
-    }
-
-    set(userId, userData) {
-        const user = { ...userData, lastAccess: Date.now(), cachedAt: Date.now() };
-        this.cache.set(userId, user);
-        return user;
-    }
-
-    update(userId, updates) {
-        const existing = this.cache.get(userId);
-        if (existing) {
-            const updated = { ...existing, ...updates, lastAccess: Date.now() };
-            this.cache.set(userId, updated);
-            this.dirtyUsers.add(userId);
-            return updated;
-        }
-        return null;
-    }
-
-    async updateImmediate(userId, updates, db) {
-        const updated = this.update(userId, updates);
-        if (updated && db) {
-            try {
-                await db.collection('users').doc(userId).update(updates);
-                this.dirtyUsers.delete(userId);
-                console.log(`⚡ Immediate sync: ${userId}`);
-            } catch (error) {
-                console.error(`Immediate sync failed:`, error.message);
-            }
-        }
-        return updated;
-    }
-
-    async syncDirtyToFirebase(db) {
-        if (!db) return;
-        const dirtyArray = Array.from(this.dirtyUsers);
-        if (dirtyArray.length === 0) return;
-        
-        console.log(`🔄 Syncing ${dirtyArray.length} dirty users...`);
-        let success = 0;
-        
-        for (const userId of dirtyArray) {
-            const user = this.cache.get(userId);
-            if (user) {
-                try {
-                    const { lastAccess, cachedAt, ...userToSave } = user;
-                    await db.collection('users').doc(userId).set(userToSave, { merge: true });
-                    success++;
-                } catch (error) {
-                    console.error(`Failed to sync ${userId}:`, error.message);
-                }
-            }
-        }
-        
-        this.dirtyUsers.clear();
-        console.log(`✅ Sync complete: ${success} users updated`);
-    }
-
-    getStats() {
-        return { cacheSize: this.cache.size, dirtyCount: this.dirtyUsers.size };
-    }
-}
-
-const smartCache = new SmartCache();
-
-// ============================================================================
-// 6. 📊 SMART USER COUNTER (NO FULL COLLECTION SCAN)
+// 5. 💾 SMART COUNTER (NO FULL COLLECTION SCAN)
 // ============================================================================
 
 class SmartCounter {
@@ -256,6 +220,7 @@ class SmartCounter {
             const doc = await counterRef.get();
             this.cachedTotal = doc.exists ? (doc.data().totalUsers || 0) : 0;
             this.lastFetch = Date.now();
+            console.log(`📊 Total users from counter: ${this.cachedTotal}`);
             return this.cachedTotal;
         } catch (error) {
             console.error('Get counter error:', error.message);
@@ -265,6 +230,99 @@ class SmartCounter {
 }
 
 const smartCounter = new SmartCounter();
+
+// ============================================================================
+// 6. 💾 ADVANCED CACHE SYSTEM
+// ============================================================================
+
+class UserCache {
+    constructor() {
+        this.cache = new Map();
+        this.dirtyUsers = new Set();
+        this.stats = { hits: 0, misses: 0 };
+    }
+
+    get(userId) {
+        const user = this.cache.get(userId);
+        if (user) {
+            user.lastAccess = Date.now();
+            this.stats.hits++;
+            return { ...user };
+        }
+        this.stats.misses++;
+        return null;
+    }
+
+    set(userId, userData) {
+        const user = { ...userData, lastAccess: Date.now(), cachedAt: Date.now() };
+        this.cache.set(userId, user);
+        console.log(`💾 Cached user: ${userId} (Total cached: ${this.cache.size})`);
+        return user;
+    }
+
+    update(userId, updates) {
+        const existing = this.cache.get(userId);
+        if (existing) {
+            const updated = { ...existing, ...updates, lastAccess: Date.now() };
+            this.cache.set(userId, updated);
+            this.dirtyUsers.add(userId);
+            return updated;
+        }
+        return null;
+    }
+
+    async updateImmediate(userId, updates, db) {
+        const updated = this.update(userId, updates);
+        if (updated && db) {
+            try {
+                await db.collection('users').doc(userId).update(updates);
+                this.dirtyUsers.delete(userId);
+                console.log(`⚡ Immediate sync: ${userId}`);
+            } catch (error) {
+                console.error(`Immediate sync failed:`, error.message);
+            }
+        }
+        return updated;
+    }
+
+    async syncAllToFirebase(db) {
+        if (!db) return;
+        const dirtyArray = Array.from(this.dirtyUsers);
+        if (dirtyArray.length === 0) return;
+        
+        console.log(`🔄 Periodic sync: Saving ${dirtyArray.length} dirty users to Firebase...`);
+        let success = 0;
+        
+        for (const userId of dirtyArray) {
+            const user = this.cache.get(userId);
+            if (user) {
+                try {
+                    const { lastAccess, cachedAt, ...userToSave } = user;
+                    await db.collection('users').doc(userId).set(userToSave, { merge: true });
+                    success++;
+                } catch (error) {
+                    console.error(`Failed to sync ${userId}:`, error.message);
+                }
+            }
+        }
+        
+        this.dirtyUsers.clear();
+        console.log(`✅ Periodic sync complete: ${success} users updated`);
+    }
+
+    getStats() {
+        const hitRate = this.stats.hits + this.stats.misses === 0 ? 0 : ((this.stats.hits / (this.stats.hits + this.stats.misses)) * 100).toFixed(1);
+        return { 
+            cacheSize: this.cache.size, 
+            dirtyCount: this.dirtyUsers.size,
+            hits: this.stats.hits,
+            misses: this.stats.misses,
+            hitRate: `${hitRate}%`
+        };
+    }
+}
+
+const userCache = new UserCache();
 
 // ============================================================================
 // 7. 🔥 FIREBASE SETUP
@@ -279,10 +337,10 @@ if (serviceAccount) {
             admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
         }
         db = admin.firestore();
-        console.log('🔥 Firebase connected');
+        console.log('🔥 Firebase initialized');
         
         setInterval(async () => {
-            await smartCache.syncDirtyToFirebase(db);
+            await userCache.syncAllToFirebase(db);
         }, APP_CONFIG.syncInterval);
         
     } catch (error) {
@@ -295,18 +353,19 @@ function checkDb() {
 }
 
 // ============================================================================
-// 8. 📊 USER MANAGEMENT (CACHE FIRST)
+// 8. 📊 USER MANAGEMENT WITH CACHE
 // ============================================================================
 
 async function getUser(userId) {
-    let user = smartCache.get(userId);
+    let user = userCache.get(userId);
     if (user) return user;
     
     if (!checkDb()) return null;
     try {
         const userDoc = await db.collection('users').doc(userId).get();
         if (userDoc.exists) {
-            return smartCache.set(userId, userDoc.data());
+            const userData = userDoc.data();
+            return userCache.set(userId, userData);
         }
         return null;
     } catch (error) {
@@ -316,7 +375,7 @@ async function getUser(userId) {
 }
 
 async function getOrCreateUser(userId, userName, username) {
-    let user = smartCache.get(userId);
+    let user = userCache.get(userId);
     if (user) return user;
     
     if (!checkDb()) return null;
@@ -325,7 +384,7 @@ async function getOrCreateUser(userId, userName, username) {
         const userDoc = await userRef.get();
         
         if (userDoc.exists) {
-            return smartCache.set(userId, userDoc.data());
+            return userCache.set(userId, userDoc.data());
         }
         
         const newUser = {
@@ -349,8 +408,8 @@ async function getOrCreateUser(userId, userName, username) {
         await userRef.set(newUser);
         await smartCounter.increment(db);
         
-        console.log(`✅ New user: ${userId} (${userName})`);
-        return smartCache.set(userId, newUser);
+        console.log(`✅ New user created: ${userId} (${userName})`);
+        return userCache.set(userId, newUser);
         
     } catch (error) {
         console.error('Create user error:', error.message);
@@ -360,9 +419,9 @@ async function getOrCreateUser(userId, userName, username) {
 
 async function updateUser(userId, updates, immediate = false) {
     if (immediate) {
-        return await smartCache.updateImmediate(userId, updates, db);
+        return await userCache.updateImmediate(userId, updates, db);
     }
-    return smartCache.update(userId, updates);
+    return userCache.update(userId, updates);
 }
 
 async function addTransaction(userId, transaction, immediate = false) {
@@ -397,14 +456,16 @@ async function verifyChannelMembership(userId, channelUsername, forceRefresh = f
     }
     
     try {
-        const cleanChannel = channelUsername.replace('@', '');
+        const cleanChannel = channelUsername.replace('@', '').trim();
         const chatMember = await bot.telegram.getChatMember(`@${cleanChannel}`, parseInt(userId));
         const isMember = ['member', 'administrator', 'creator'].includes(chatMember.status);
         
         channelStatusCache.set(cacheKey, { isMember, timestamp: Date.now() });
+        console.log(`🔍 Channel ${channelUsername}: ${isMember ? '✅' : '❌'} for user ${userId}`);
         return isMember;
         
     } catch (error) {
+        console.log(`⚠️ Channel check failed for ${channelUsername}:`, error.code);
         return false;
     }
 }
@@ -431,11 +492,19 @@ async function processReferralAfterVerification(referrerId, newUserId, newUserNa
     if (referrerId === newUserId) return false;
 
     try {
+        console.log(`🎁 PROCESSING REFERRAL: ${referrerId} → ${newUserId}`);
+
         const referrer = await getUser(referrerId);
-        if (!referrer) return false;
+        if (!referrer) {
+            console.log(`❌ Referral failed: Referrer ${referrerId} not found`);
+            return false;
+        }
 
         const currentReferrals = referrer.referrals || [];
-        if (currentReferrals.includes(newUserId)) return false;
+        if (currentReferrals.includes(newUserId)) {
+            console.log(`❌ Duplicate referral blocked: ${referrerId} → ${newUserId}`);
+            return false;
+        }
 
         const newInviteCount = (referrer.inviteCount || 0) + 1;
 
@@ -443,17 +512,20 @@ async function processReferralAfterVerification(referrerId, newUserId, newUserNa
             referrals: [...currentReferrals, newUserId],
             inviteCount: newInviteCount,
             balance: (referrer.balance || 0) + APP_CONFIG.referralBonus,
-            totalEarned: (referrer.totalEarned || 0) + APP_CONFIG.referralBonus
-        }, false);
+            totalEarned: (referrer.totalEarned || 0) + APP_CONFIG.referralBonus,
+            lastReferralAt: new Date().toISOString()
+        }, true);
         
         await addTransaction(referrerId, {
             type: 'referral',
             amount: APP_CONFIG.referralBonus,
             currency: 'USDT',
             status: 'completed',
-            description: `Referral: ${newUserName}`
-        }, false);
+            description: `Referral bonus for ${newUserName}`
+        }, true);
 
+        console.log(`✅ REFERRAL BONUS PAID: ${referrerId} +${APP_CONFIG.referralBonus} USDT`);
+        
         await bot.telegram.sendMessage(referrerId, 
             `🎉 +${APP_CONFIG.referralBonus} USDT\n\n${escapeHtml(newUserName)} joined using your link!\nTotal referrals: ${newInviteCount}`, 
             { parse_mode: 'HTML' }
@@ -462,13 +534,13 @@ async function processReferralAfterVerification(referrerId, newUserId, newUserNa
         return true;
         
     } catch (error) {
-        console.error('Referral error:', error.message);
+        console.error(`❌ CRITICAL REFERRAL ERROR:`, error.message);
         return false;
     }
 }
 
 // ============================================================================
-// 11. 💸 WITHDRAWAL SYSTEM
+// 11. 💸 WITHDRAWAL SYSTEM (AUTO-APPROVED, NO COOLDOWN)
 // ============================================================================
 
 const withdrawSessions = new Map();
@@ -492,7 +564,7 @@ async function createWithdrawalRequest(userId, amount, walletAddress) {
             return { success: false, error: `Your balance: ${formatUSD(user.balance || 0)}` };
         }
 
-        await updateUser(userId, { balance: (user.balance || 0) - amount }, false);
+        await updateUser(userId, { balance: (user.balance || 0) - amount }, true);
 
         const withdrawalRef = db.collection('withdrawals').doc();
         const requestId = withdrawalRef.id;
@@ -516,8 +588,9 @@ async function createWithdrawalRequest(userId, amount, walletAddress) {
             amount: amount,
             currency: 'USDT',
             status: 'approved',
+            approvedAt: approvedAt,
             description: `Withdrawal to ${walletAddress.substring(0, 10)}...`
-        }, false);
+        }, true);
 
         const userWithdrawals = user.withdrawals || [];
         userWithdrawals.push({ 
@@ -528,15 +601,16 @@ async function createWithdrawalRequest(userId, amount, walletAddress) {
             approvedAt: approvedAt,
             createdAt: new Date().toISOString() 
         });
-        await updateUser(userId, { withdrawals: userWithdrawals }, false);
+        await updateUser(userId, { withdrawals: userWithdrawals }, true);
 
         if (WITHDRAWAL_GROUP_ID) {
             await bot.telegram.sendMessage(WITHDRAWAL_GROUP_ID,
-                `💸 NEW WITHDRAWAL\n\nUser: ${escapeHtml(user.userName)}\nID: ${userId}\nAmount: ${formatUSD(amount)}\nWallet: ${walletAddress}\nID: ${requestId}`,
+                `💸 NEW WITHDRAWAL\n\nUser: ${escapeHtml(user.userName)}\nID: ${userId}\nAmount: ${formatUSD(amount)}\nWallet: ${walletAddress}\nRequest ID: ${requestId}`,
                 { parse_mode: 'HTML' }
             ).catch(() => {});
         }
 
+        console.log(`✅ Withdrawal request created: ${requestId} for ${userId}`);
         return { success: true, requestId };
         
     } catch (error) {
@@ -549,34 +623,67 @@ async function createWithdrawalRequest(userId, amount, walletAddress) {
 // 12. 🎨 KEYBOARDS
 // ============================================================================
 
-function getMainKeyboard() {
-    return {
-        keyboard: [
-            ['💰 BALANCE', '🔗 REFERRAL'],
-            ['💸 WITHDRAW', '📜 HISTORY']
-        ],
-        resize_keyboard: true,
-        persistent: true
-    };
+function getMainKeyboard(userId) {
+    const isUserAdmin = isAdmin(userId);
+    console.log(`🎛️ Building keyboard for user ${userId}, isAdmin: ${isUserAdmin}`);
+    
+    const keyboard = [
+        ['💰 BALANCE', '🔗 REFERRAL'],
+        ['💸 WITHDRAW', '📜 HISTORY'],
+        ['⚙️ SETTINGS']
+    ];
+    if (isUserAdmin) {
+        keyboard.push(['👑 ADMIN PANEL']);
+        console.log('👑 Admin button added to keyboard');
+    }
+    return { keyboard, resize_keyboard: true, persistent: true };
 }
 
 function getAdminKeyboard() {
     return {
         inline_keyboard: [
-            [{ text: '📊 STATS', callback_data: 'admin_stats' }],
-            [{ text: '💰 ADD', callback_data: 'admin_add' }],
+            [{ text: '📊 STATISTICS', callback_data: 'admin_stats' }],
+            [{ text: '👥 TOTAL USERS', callback_data: 'admin_users' }],
+            [{ text: '💰 ADD BALANCE', callback_data: 'admin_add_balance' }],
+            [{ text: '➖ REMOVE BALANCE', callback_data: 'admin_remove_balance' }],
             [{ text: '📢 BROADCAST', callback_data: 'admin_broadcast' }],
+            [{ text: '🔄 SYNC CACHE', callback_data: 'admin_sync_cache' }],
             [{ text: '🚪 LOGOUT', callback_data: 'admin_logout' }]
         ]
     };
 }
 
+function getWithdrawAmountKeyboard(balance) {
+    const suggestions = [
+        { text: `${APP_CONFIG.minWithdrawUSDT} USDT`, callback_data: `withdraw_${APP_CONFIG.minWithdrawUSDT}` },
+        { text: `${Math.floor(balance / 4)} USDT`, callback_data: `withdraw_${Math.floor(balance / 4)}` },
+        { text: `${Math.floor(balance / 2)} USDT`, callback_data: `withdraw_${Math.floor(balance / 2)}` },
+        { text: `${balance} USDT`, callback_data: `withdraw_${balance}` }
+    ];
+    return {
+        inline_keyboard: [
+            suggestions.slice(0, 2),
+            suggestions.slice(2, 4),
+            [{ text: '✏️ CUSTOM AMOUNT', callback_data: 'withdraw_custom' }]
+        ]
+    };
+}
+
+function getCancelKeyboard() {
+    return {
+        inline_keyboard: [
+            [{ text: '❌ CANCEL', callback_data: 'cancel_action' }]
+        ]
+    };
+}
+
 // ============================================================================
-// 13. 🤖 BOT SETUP
+// 13. 🤖 MAIN BOT COMMANDS & HANDLERS
 // ============================================================================
 
 const bot = new Telegraf(BOT_TOKEN);
 
+// Prevent bot from working in groups
 bot.use((ctx, next) => {
     if (ctx.chat?.type === 'private' || ctx.callbackQuery) {
         return next();
@@ -597,6 +704,8 @@ bot.start(async (ctx) => {
     const userName = ctx.from.first_name || 'User';
     const userUsername = ctx.from.username || '';
 
+    console.log(`📨 /start command from ${userId} (${userName})`);
+
     if (rateLimiter.isRateLimited(userId)) {
         return ctx.reply('⚠️ Too many requests. Please slow down.');
     }
@@ -609,15 +718,17 @@ bot.start(async (ctx) => {
     if (!user) return;
 
     if (refCode && refCode !== userId && !user.referredBy) {
+        console.log(`🔗 REFERRAL CLICK: ${userId} ← ${refCode}`);
+        
         await updateUser(userId, { referredBy: refCode }, true);
         
         const referrer = await getUser(refCode);
         if (referrer) {
             const newClicks = (referrer.referral_clicks || 0) + 1;
-            await updateUser(refCode, { referral_clicks: newClicks }, false);
+            await updateUser(refCode, { referral_clicks: newClicks }, true);
             
             await bot.telegram.sendMessage(refCode, 
-                `👀 Someone clicked your link!\n\nThey'll earn you ${APP_CONFIG.referralBonus} USDT after verification.`,
+                `👀 Someone clicked your referral link!\n\nThey will earn you ${APP_CONFIG.referralBonus} USDT after verification.`,
                 { parse_mode: 'HTML' }
             ).catch(() => {});
         }
@@ -628,6 +739,7 @@ bot.start(async (ctx) => {
     const isVerified = await isUserVerifiedInChannels(userId);
     
     if (isVerified && !user.isVerified) {
+        console.log(`✅ User ${userId} verified channels`);
         await updateUser(userId, { isVerified: true, verifiedAt: new Date().toISOString() }, true);
         
         if (user.balance === 0) {
@@ -647,16 +759,16 @@ bot.start(async (ctx) => {
         
         const updatedUser = await getUser(userId);
         await ctx.reply(
-            `✅ Verified!\n\n💰 Balance: ${formatUSD(updatedUser?.balance || 0)}\n👥 Referrals: ${updatedUser?.inviteCount || 0}`,
-            { parse_mode: 'HTML', reply_markup: getMainKeyboard() }
+            `✅ Welcome ${escapeHtml(userName)}!\n\n💰 Balance: ${formatUSD(updatedUser?.balance || 0)}\n👥 Referrals: ${updatedUser?.inviteCount || 0}\n💵 Total earned: ${formatUSD(updatedUser?.totalEarned || 0)}`,
+            { parse_mode: 'HTML', reply_markup: getMainKeyboard(userId) }
         );
         return;
     }
     
     if (isVerified && user.isVerified) {
         await ctx.reply(
-            `🎯 Welcome back, ${escapeHtml(userName)}!\n\n💰 Balance: ${formatUSD(user.balance || 0)}\n👥 Referrals: ${user.inviteCount || 0}`,
-            { parse_mode: 'HTML', reply_markup: getMainKeyboard() }
+            `🎯 Welcome back, ${escapeHtml(userName)}!\n\n💰 Balance: ${formatUSD(user.balance || 0)}\n👥 Referrals: ${user.inviteCount || 0}\n💵 Total earned: ${formatUSD(user.totalEarned || 0)}`,
+            { parse_mode: 'HTML', reply_markup: getMainKeyboard(userId) }
         );
         return;
     }
@@ -679,21 +791,47 @@ bot.start(async (ctx) => {
     );
 });
 
-// ==================== BALANCE ====================
+// ==================== ADMIN COMMAND ====================
+bot.command('admin', async (ctx) => {
+    const userId = ctx.from.id.toString();
+    console.log(`📨 /admin command from ${userId}`);
+    
+    if (!isAdmin(userId)) {
+        console.log(`⛔ Non-admin ${userId} tried to access admin panel`);
+        return ctx.reply('⛔ Access Denied.');
+    }
+    
+    const session = adminSessions.get(userId);
+    if (session?.authenticated) {
+        const totalUsers = await smartCounter.getTotal(db);
+        const cacheStats = userCache.getStats();
+        await ctx.reply(
+            `👑 ADMIN PANEL\n\n✅ Authenticated\n👥 Users: ${totalUsers}\n📦 Cache: ${cacheStats.cacheSize} users\n🎯 Hit rate: ${cacheStats.hitRate}\n\n✨ Withdrawals are auto-approved!`,
+            { reply_markup: getAdminKeyboard(), parse_mode: 'HTML' }
+        );
+        return;
+    }
+    
+    await ctx.reply('🔐 Enter admin password:');
+    adminSessions.set(userId, { waitingForPassword: true, createdAt: Date.now() });
+});
+
+// ==================== TEXT HANDLERS ====================
 bot.hears('💰 BALANCE', async (ctx) => {
     const userId = ctx.from.id.toString();
+    console.log(`💰 Balance request from ${userId}`);
     const user = await getUser(userId);
     if (!user) return;
     
     await ctx.reply(
-        `💰 Balance: ${formatUSD(user.balance || 0)}\n👥 Referrals: ${user.inviteCount || 0}\n💵 Total earned: ${formatUSD(user.totalEarned || 0)}`,
-        { parse_mode: 'HTML', reply_markup: getMainKeyboard() }
+        `💰 BALANCE\n\nUSDT: ${formatUSD(user.balance || 0)}\n👥 Referrals: ${user.inviteCount || 0}\n💵 Total earned: ${formatUSD(user.totalEarned || 0)}`,
+        { parse_mode: 'HTML', reply_markup: getMainKeyboard(userId) }
     );
 });
 
-// ==================== REFERRAL ====================
 bot.hears('🔗 REFERRAL', async (ctx) => {
     const userId = ctx.from.id.toString();
+    console.log(`🔗 Referral request from ${userId}`);
     const user = await getUser(userId);
     if (!user) return;
     
@@ -701,36 +839,31 @@ bot.hears('🔗 REFERRAL', async (ctx) => {
     
     const keyboard = {
         inline_keyboard: [
-            [{ text: '📤 SHARE', url: `https://t.me/share/url?url=${encodeURIComponent(link)}&text=Join%20Daily%20Airdrop%20and%20earn%20USDT!` }]
+            [{ text: '📤 SHARE LINK', url: `https://t.me/share/url?url=${encodeURIComponent(link)}&text=Join%20Daily%20Airdrop%20and%20earn%20USDT!` }]
         ]
     };
     
     await ctx.reply(
-        `🔗 Your link:\n\n<code>${link}</code>\n\nTotal referrals: ${user.inviteCount || 0}\nEarned: ${formatUSD((user.inviteCount || 0) * APP_CONFIG.referralBonus)}`,
+        `🔗 YOUR REFERRAL LINK\n\n<code>${link}</code>\n\n👥 Total referrals: ${user.inviteCount || 0}\n💰 Earned: ${formatUSD((user.inviteCount || 0) * APP_CONFIG.referralBonus)}`,
         { parse_mode: 'HTML', reply_markup: keyboard }
     );
 });
 
-// ==================== WITHDRAW ====================
 bot.hears('💸 WITHDRAW', async (ctx) => {
     const userId = ctx.from.id.toString();
+    console.log(`💸 Withdraw request from ${userId}`);
     const user = await getUser(userId);
     if (!user) return;
     
     const isVerified = await isUserVerifiedInChannels(userId);
     if (!isVerified) {
-        const keyboard = {
-            inline_keyboard: [
-                [{ text: '✅ VERIFY', callback_data: 'verify_membership' }]
-            ]
-        };
-        return ctx.reply('⚠️ You must verify channels first.', { parse_mode: 'HTML', reply_markup: keyboard });
+        return ctx.reply('⚠️ You must verify channels first.', { parse_mode: 'HTML' });
     }
     
     if (!user.walletAddress) {
         await ctx.reply(
-            `💸 Withdrawal\n\nYour balance: ${formatUSD(user.balance || 0)}\nMinimum: ${APP_CONFIG.minWithdrawUSDT} USDT\n\nSend your BEP20 address to continue.\n\nExample: <code>0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0</code>`,
-            { parse_mode: 'HTML' }
+            `💸 WITHDRAWAL SETUP\n\nYour balance: ${formatUSD(user.balance || 0)}\nMinimum: ${APP_CONFIG.minWithdrawUSDT} USDT\n\nSend your BEP20 wallet address.\n\nExample: <code>0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0</code>`,
+            { parse_mode: 'HTML', reply_markup: getCancelKeyboard() }
         );
         withdrawSessions.set(userId, { step: 'waitingForWallet', createdAt: Date.now() });
         return;
@@ -751,38 +884,80 @@ bot.hears('💸 WITHDRAW', async (ctx) => {
     };
     
     await ctx.reply(
-        `💸 Withdrawal\n\nBalance: ${formatUSD(user.balance || 0)}\nMinimum: ${APP_CONFIG.minWithdrawUSDT} USDT\nWallet: <code>${user.walletAddress.substring(0, 10)}...${user.walletAddress.substring(38)}</code>\n\nChoose amount:`,
+        `💸 WITHDRAWAL\n\nBalance: ${formatUSD(user.balance || 0)}\nMinimum: ${APP_CONFIG.minWithdrawUSDT} USDT\nWallet: <code>${user.walletAddress.substring(0, 10)}...${user.walletAddress.substring(38)}</code>\n\nChoose amount:`,
         { parse_mode: 'HTML', reply_markup: keyboard }
     );
-    withdrawSessions.set(userId, { step: 'waitingForAmount', currency: 'USDT', createdAt: Date.now() });
+    withdrawSessions.set(userId, { currency: 'USDT', step: 'waitingForAmount', createdAt: Date.now() });
 });
 
-// ==================== HISTORY ====================
 bot.hears('📜 HISTORY', async (ctx) => {
     const userId = ctx.from.id.toString();
+    console.log(`📜 History request from ${userId}`);
     const user = await getUser(userId);
     if (!user) return;
     
     const transactions = user.transactions || [];
     if (transactions.length === 0) {
-        return ctx.reply('📭 No transactions yet.', { parse_mode: 'HTML', reply_markup: getMainKeyboard() });
+        return ctx.reply('📭 No transactions yet.', { parse_mode: 'HTML', reply_markup: getMainKeyboard(userId) });
     }
     
     let history = '';
     for (let i = 0; i < Math.min(transactions.length, 10); i++) {
         const tx = transactions[i];
         const date = new Date(tx.timestamp).toLocaleDateString();
-        let status = tx.status === 'completed' ? '✅' : tx.status === 'approved' ? '✅' : '⏳';
+        let status = tx.status === 'completed' || tx.status === 'approved' ? '✅' : '⏳';
         history += `\n${status} ${tx.type.toUpperCase()}: ${formatUSD(tx.amount)} (${date})`;
     }
     
-    await ctx.reply(`📜 History:${history}`, { parse_mode: 'HTML', reply_markup: getMainKeyboard() });
+    await ctx.reply(`📜 TRANSACTION HISTORY${history}`, { parse_mode: 'HTML', reply_markup: getMainKeyboard(userId) });
 });
 
-// ==================== VERIFY CALLBACK ====================
+bot.hears('⚙️ SETTINGS', async (ctx) => {
+    const userId = ctx.from.id.toString();
+    console.log(`⚙️ Settings request from ${userId}`);
+    const user = await getUser(userId);
+    
+    const keyboard = {
+        inline_keyboard: [
+            [{ text: '💳 CHANGE WALLET', callback_data: 'change_wallet' }],
+            [{ text: '🔙 BACK', callback_data: 'back_to_menu' }]
+        ]
+    };
+    
+    await ctx.reply(
+        `⚙️ SETTINGS\n\n💳 Wallet: ${user?.walletAddress ? `<code>${user.walletAddress.substring(0, 10)}...${user.walletAddress.substring(38)}</code>` : 'Not set'}\n🔐 Verified: ${user?.isVerified ? '✅ Yes' : '❌ No'}`,
+        { parse_mode: 'HTML', reply_markup: keyboard }
+    );
+});
+
+bot.hears('👑 ADMIN PANEL', async (ctx) => {
+    const userId = ctx.from.id.toString();
+    console.log(`👑 Admin panel request from ${userId}`);
+    
+    if (!isAdmin(userId)) {
+        return ctx.reply('⛔ Access Denied');
+    }
+    
+    const session = adminSessions.get(userId);
+    if (session?.authenticated) {
+        const totalUsers = await smartCounter.getTotal(db);
+        const cacheStats = userCache.getStats();
+        await ctx.reply(
+            `👑 ADMIN PANEL\n\n✅ Authenticated\n👥 Users: ${totalUsers}\n📦 Cache: ${cacheStats.cacheSize} users\n🎯 Hit rate: ${cacheStats.hitRate}`,
+            { reply_markup: getAdminKeyboard(), parse_mode: 'HTML' }
+        );
+        return;
+    }
+    
+    await ctx.reply('🔐 Enter admin password:');
+    adminSessions.set(userId, { waitingForPassword: true, createdAt: Date.now() });
+});
+
+// ==================== CALLBACK HANDLERS ====================
 bot.action('verify_membership', async (ctx) => {
     const userId = ctx.from.id.toString();
-    await ctx.answerCbQuery('Checking...');
+    await ctx.answerCbQuery('Checking channels...');
+    console.log(`🔍 Verification requested for ${userId}`);
     
     const missing = await getMissingChannels(userId, true);
     
@@ -821,16 +996,51 @@ bot.action('verify_membership', async (ctx) => {
     const updatedUser = await getUser(userId);
     
     await ctx.reply(
-        `✅ Verified!\n\n💰 Balance: ${formatUSD(updatedUser?.balance || 0)}\n👥 Referrals: ${updatedUser?.inviteCount || 0}\n💵 Total earned: ${formatUSD(updatedUser?.totalEarned || 0)}`,
-        { parse_mode: 'HTML', reply_markup: getMainKeyboard() }
+        `✅ VERIFIED!\n\n💰 Balance: ${formatUSD(updatedUser?.balance || 0)}\n👥 Referrals: ${updatedUser?.inviteCount || 0}\n💵 Total earned: ${formatUSD(updatedUser?.totalEarned || 0)}`,
+        { parse_mode: 'HTML', reply_markup: getMainKeyboard(userId) }
     );
 });
 
-// ==================== WITHDRAW CALLBACKS ====================
+bot.action('change_wallet', async (ctx) => {
+    const userId = ctx.from.id.toString();
+    await ctx.answerCbQuery();
+    console.log(`💳 Change wallet requested for ${userId}`);
+    
+    await ctx.reply(
+        `💳 CHANGE WALLET\n\nSend your new BEP20 wallet address.\n\nExample: <code>0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0</code>`,
+        { parse_mode: 'HTML', reply_markup: getCancelKeyboard() }
+    );
+    withdrawSessions.set(userId, { step: 'waitingForWalletUpdate', createdAt: Date.now() });
+});
+
+bot.action('back_to_menu', async (ctx) => {
+    const userId = ctx.from.id.toString();
+    await ctx.answerCbQuery();
+    withdrawSessions.delete(userId);
+    const user = await getUser(userId);
+    await ctx.reply(
+        `🎯 MAIN MENU\n\n💰 Balance: ${formatUSD(user?.balance || 0)}`,
+        { parse_mode: 'HTML', reply_markup: getMainKeyboard(userId) }
+    );
+});
+
+bot.action('cancel_action', async (ctx) => {
+    const userId = ctx.from.id.toString();
+    await ctx.answerCbQuery();
+    withdrawSessions.delete(userId);
+    const user = await getUser(userId);
+    await ctx.reply(
+        `❌ Action cancelled.`,
+        { parse_mode: 'HTML', reply_markup: getMainKeyboard(userId) }
+    );
+});
+
+// Withdraw callbacks
 bot.action(/withdraw_(.+)/, async (ctx) => {
     const userId = ctx.from.id.toString();
     const amount = parseFloat(ctx.match[1]);
     await ctx.answerCbQuery();
+    console.log(`💸 Withdraw amount selected: ${amount} USDT for ${userId}`);
     
     const session = withdrawSessions.get(userId);
     if (!session) return;
@@ -848,12 +1058,12 @@ bot.action(/withdraw_(.+)/, async (ctx) => {
     const keyboard = {
         inline_keyboard: [
             [{ text: '✅ CONFIRM', callback_data: 'confirm_withdraw' }],
-            [{ text: '🔙 BACK', callback_data: 'back_to_withdraw' }]
+            [{ text: '🔙 BACK', callback_data: 'back_to_menu' }]
         ]
     };
     
     await ctx.reply(
-        `Confirm withdrawal:\n\nAmount: ${formatUSD(amount)}\nWallet: <code>${user.walletAddress.substring(0, 10)}...${user.walletAddress.substring(38)}</code>`,
+        `✅ CONFIRM WITHDRAWAL\n\nAmount: ${formatUSD(amount)}\nWallet: <code>${user.walletAddress.substring(0, 10)}...${user.walletAddress.substring(38)}</code>\n\nClick CONFIRM to submit.`,
         { parse_mode: 'HTML', reply_markup: keyboard }
     );
 });
@@ -862,7 +1072,7 @@ bot.action('withdraw_custom', async (ctx) => {
     const userId = ctx.from.id.toString();
     await ctx.answerCbQuery();
     withdrawSessions.set(userId, { step: 'waitingForCustomAmount', createdAt: Date.now() });
-    await ctx.reply('Send the amount as a number.\n\nExample: 100', { parse_mode: 'HTML' });
+    await ctx.reply('✏️ Enter custom amount (number only):\n\nExample: 100', { parse_mode: 'HTML' });
 });
 
 bot.action('confirm_withdraw', async (ctx) => {
@@ -871,7 +1081,7 @@ bot.action('confirm_withdraw', async (ctx) => {
     await ctx.answerCbQuery();
     
     if (!session?.amount) {
-        await ctx.reply('Session expired. Start over.');
+        await ctx.reply('❌ Session expired. Start over.');
         return;
     }
     
@@ -881,99 +1091,133 @@ bot.action('confirm_withdraw', async (ctx) => {
     const result = await createWithdrawalRequest(userId, session.amount, user.walletAddress);
     
     if (result.success) {
-        await ctx.reply(`✅ Withdrawal submitted!\n\nAmount: ${formatUSD(session.amount)}\nID: ${result.requestId}\n\nProcessing: 1-12 hours`, { parse_mode: 'HTML' });
+        await ctx.reply(`✅ WITHDRAWAL SUBMITTED!\n\nAmount: ${formatUSD(session.amount)}\nRequest ID: ${result.requestId}\n\nProcessing: 1-12 hours`, { parse_mode: 'HTML' });
     } else {
-        await ctx.reply(`❌ Failed: ${result.error}`, { parse_mode: 'HTML' });
+        await ctx.reply(`❌ Withdrawal failed: ${result.error}`, { parse_mode: 'HTML' });
     }
     
     withdrawSessions.delete(userId);
-});
-
-bot.action('back_to_withdraw', async (ctx) => {
-    const userId = ctx.from.id.toString();
-    await ctx.answerCbQuery();
-    withdrawSessions.delete(userId);
-    
-    const user = await getUser(userId);
-    const suggestions = [
-        { text: `${APP_CONFIG.minWithdrawUSDT} USDT`, callback_data: `withdraw_${APP_CONFIG.minWithdrawUSDT}` },
-        { text: `100 USDT`, callback_data: `withdraw_100` },
-        { text: `250 USDT`, callback_data: `withdraw_250` },
-        { text: `500 USDT`, callback_data: `withdraw_500` }
-    ];
-    
-    const keyboard = {
-        inline_keyboard: [
-            suggestions.map(s => ({ text: s.text, callback_data: s.callback_data })),
-            [{ text: '✏️ CUSTOM', callback_data: 'withdraw_custom' }]
-        ]
-    };
-    
-    await ctx.reply(
-        `💸 Withdrawal\n\nBalance: ${formatUSD(user?.balance || 0)}\nMinimum: ${APP_CONFIG.minWithdrawUSDT} USDT\n\nChoose amount:`,
-        { parse_mode: 'HTML', reply_markup: keyboard }
-    );
 });
 
 // ==================== ADMIN PANEL ====================
 const adminSessions = new Map();
 
-bot.hears('👑 ADMIN PANEL', async (ctx) => {
-    const userId = ctx.from.id.toString();
-    if (!isAdmin(userId)) return;
-    
-    const session = adminSessions.get(userId);
-    if (session?.authenticated) {
-        const totalUsers = await smartCounter.getTotal(db);
-        await ctx.reply(`👑 Admin Panel\n\nUsers: ${totalUsers}\nCache: ${smartCache.getStats().cacheSize} users`, { reply_markup: getAdminKeyboard(), parse_mode: 'HTML' });
-        return;
+setInterval(() => {
+    const now = Date.now();
+    for (const [userId, session] of adminSessions.entries()) {
+        if (session.createdAt && (now - session.createdAt) > APP_CONFIG.adminSessionTTL) {
+            adminSessions.delete(userId);
+        }
     }
-    
-    await ctx.reply('🔐 Admin password:');
-    adminSessions.set(userId, { waitingForPassword: true, createdAt: Date.now() });
-});
+}, APP_CONFIG.sessionCleanupInterval);
 
+async function getBotStats() {
+    const totalUsers = await smartCounter.getTotal(db);
+    let totalBalance = 0;
+    for (const [_, user] of userCache.cache) {
+        totalBalance += user.balance || 0;
+    }
+    return { users: totalUsers, totalBalance };
+}
+
+async function broadcastToAllUsers(message) {
+    let sent = 0, failed = 0;
+    for (const [userId, _] of userCache.cache) {
+        try {
+            await bot.telegram.sendMessage(userId, `📢 ANNOUNCEMENT\n\n${message}`, { parse_mode: 'HTML' });
+            sent++;
+            await new Promise(r => setTimeout(r, 50));
+        } catch (e) { failed++; }
+    }
+    return { sent, failed };
+}
+
+// Admin action handlers
 bot.action('admin_stats', async (ctx) => {
     const userId = ctx.from.id.toString();
-    if (!isAdmin(userId) || !adminSessions.get(userId)?.authenticated) return;
+    if (!isAdmin(userId) || !adminSessions.get(userId)?.authenticated) {
+        await ctx.answerCbQuery('⛔ Unauthorized');
+        return;
+    }
     await ctx.answerCbQuery();
-    
-    const totalUsers = await smartCounter.getTotal(db);
-    await ctx.reply(`📊 Stats\n\nTotal users: ${totalUsers}`, { parse_mode: 'HTML' });
+    const stats = await getBotStats();
+    await ctx.reply(`📊 STATISTICS\n\n👥 Users: ${stats.users}\n💰 Total USDT: ${formatUSD(stats.totalBalance)}`);
 });
 
-bot.action('admin_add', async (ctx) => {
+bot.action('admin_users', async (ctx) => {
     const userId = ctx.from.id.toString();
-    if (!isAdmin(userId) || !adminSessions.get(userId)?.authenticated) return;
+    if (!isAdmin(userId) || !adminSessions.get(userId)?.authenticated) {
+        await ctx.answerCbQuery('⛔ Unauthorized');
+        return;
+    }
     await ctx.answerCbQuery();
-    
-    adminSessions.get(userId).step = 'adding';
-    await ctx.reply('Format: USER_ID AMOUNT\nExample: 123456789 100', { parse_mode: 'HTML' });
+    let verified = 0, withWallet = 0;
+    for (const [_, user] of userCache.cache) {
+        if (user.isVerified) verified++;
+        if (user.walletAddress) withWallet++;
+    }
+    await ctx.reply(`👥 USERS\n\n📊 Total: ${userCache.cache.size}\n✅ Verified: ${verified}\n💳 With Wallet: ${withWallet}`);
+});
+
+bot.action('admin_add_balance', async (ctx) => {
+    const userId = ctx.from.id.toString();
+    if (!isAdmin(userId) || !adminSessions.get(userId)?.authenticated) {
+        await ctx.answerCbQuery('⛔ Unauthorized');
+        return;
+    }
+    await ctx.answerCbQuery();
+    adminSessions.get(userId).step = 'adding_balance';
+    await ctx.reply('💰 ADD BALANCE\n\nFormat: USER_ID AMOUNT\nExample: 123456789 100', { parse_mode: 'HTML' });
+});
+
+bot.action('admin_remove_balance', async (ctx) => {
+    const userId = ctx.from.id.toString();
+    if (!isAdmin(userId) || !adminSessions.get(userId)?.authenticated) {
+        await ctx.answerCbQuery('⛔ Unauthorized');
+        return;
+    }
+    await ctx.answerCbQuery();
+    adminSessions.get(userId).step = 'removing_balance';
+    await ctx.reply('➖ REMOVE BALANCE\n\nFormat: USER_ID AMOUNT\nExample: 123456789 50', { parse_mode: 'HTML' });
 });
 
 bot.action('admin_broadcast', async (ctx) => {
     const userId = ctx.from.id.toString();
-    if (!isAdmin(userId) || !adminSessions.get(userId)?.authenticated) return;
+    if (!isAdmin(userId) || !adminSessions.get(userId)?.authenticated) {
+        await ctx.answerCbQuery('⛔ Unauthorized');
+        return;
+    }
     await ctx.answerCbQuery();
-    
     adminSessions.get(userId).step = 'broadcasting';
-    await ctx.reply('Send your message to all users:', { parse_mode: 'HTML' });
+    await ctx.reply('📢 BROADCAST\n\nSend your message to all users:', { parse_mode: 'HTML' });
+});
+
+bot.action('admin_sync_cache', async (ctx) => {
+    const userId = ctx.from.id.toString();
+    if (!isAdmin(userId) || !adminSessions.get(userId)?.authenticated) {
+        await ctx.answerCbQuery('⛔ Unauthorized');
+        return;
+    }
+    await ctx.answerCbQuery('🔄 Syncing...');
+    await userCache.syncAllToFirebase(db);
+    await ctx.reply('✅ Cache synced to Firebase!');
 });
 
 bot.action('admin_logout', async (ctx) => {
     const userId = ctx.from.id.toString();
     await ctx.answerCbQuery();
     adminSessions.delete(userId);
-    await ctx.reply('Logged out.');
+    await ctx.reply('🔓 Logged out successfully.');
 });
 
-// ==================== TEXT HANDLER ====================
+// ==================== TEXT MESSAGE HANDLER ====================
 bot.on('text', async (ctx) => {
     const userId = ctx.from.id.toString();
     const messageText = ctx.message.text;
     
+    const mainButtons = ['💰 BALANCE', '🔗 REFERRAL', '💸 WITHDRAW', '📜 HISTORY', '⚙️ SETTINGS', '👑 ADMIN PANEL'];
+    if (mainButtons.includes(messageText)) return;
     if (messageText.startsWith('/')) return;
-    if (['💰 BALANCE', '🔗 REFERRAL', '💸 WITHDRAW', '📜 HISTORY', '👑 ADMIN PANEL'].includes(messageText)) return;
     
     const adminSession = adminSessions.get(userId);
     
@@ -981,7 +1225,7 @@ bot.on('text', async (ctx) => {
         if (messageText === ADMIN_PASSWORD) {
             adminSessions.set(userId, { authenticated: true, createdAt: Date.now() });
             const totalUsers = await smartCounter.getTotal(db);
-            await ctx.reply(`✅ Welcome Admin!\n\nUsers: ${totalUsers}`, { reply_markup: getAdminKeyboard(), parse_mode: 'HTML' });
+            await ctx.reply(`✅ Welcome Admin!\n\n👥 Users: ${totalUsers}`, { reply_markup: getAdminKeyboard(), parse_mode: 'HTML' });
         } else {
             await ctx.reply('❌ Wrong password.');
             adminSessions.delete(userId);
@@ -989,7 +1233,7 @@ bot.on('text', async (ctx) => {
         return;
     }
     
-    if (adminSession?.step === 'adding' && isAdmin(userId)) {
+    if (adminSession?.step === 'adding_balance' && isAdmin(userId)) {
         const parts = messageText.trim().split(' ');
         if (parts.length === 2) {
             const targetUserId = parts[0];
@@ -997,7 +1241,7 @@ bot.on('text', async (ctx) => {
             if (!isNaN(amount) && amount > 0) {
                 const user = await getUser(targetUserId);
                 await updateUser(targetUserId, { balance: (user?.balance || 0) + amount, totalEarned: (user?.totalEarned || 0) + amount }, true);
-                await addTransaction(targetUserId, { type: 'admin', amount: amount, currency: 'USDT', status: 'completed', description: 'Admin added' }, true);
+                await addTransaction(targetUserId, { type: 'admin_add', amount: amount, currency: 'USDT', status: 'completed', description: 'Admin added balance' }, true);
                 await ctx.reply(`✅ Added ${formatUSD(amount)} to ${targetUserId}`);
             } else {
                 await ctx.reply('❌ Invalid amount.');
@@ -1009,17 +1253,34 @@ bot.on('text', async (ctx) => {
         return;
     }
     
-    if (adminSession?.step === 'broadcasting' && isAdmin(userId)) {
-        await ctx.reply(`📢 Broadcasting...`);
-        let sent = 0, failed = 0;
-        for (const [uid, _] of smartCache.cache) {
-            try {
-                await bot.telegram.sendMessage(uid, `📢 Announcement\n\n${messageText}`, { parse_mode: 'HTML' });
-                sent++;
-                await new Promise(r => setTimeout(r, 50));
-            } catch (e) { failed++; }
+    if (adminSession?.step === 'removing_balance' && isAdmin(userId)) {
+        const parts = messageText.trim().split(' ');
+        if (parts.length === 2) {
+            const targetUserId = parts[0];
+            const amount = parseFloat(parts[1]);
+            if (!isNaN(amount) && amount > 0) {
+                const user = await getUser(targetUserId);
+                if ((user?.balance || 0) >= amount) {
+                    await updateUser(targetUserId, { balance: (user?.balance || 0) - amount }, true);
+                    await addTransaction(targetUserId, { type: 'admin_remove', amount: amount, currency: 'USDT', status: 'completed', description: 'Admin removed balance' }, true);
+                    await ctx.reply(`✅ Removed ${formatUSD(amount)} from ${targetUserId}`);
+                } else {
+                    await ctx.reply(`❌ User balance is only ${formatUSD(user?.balance || 0)}`);
+                }
+            } else {
+                await ctx.reply('❌ Invalid amount.');
+            }
+        } else {
+            await ctx.reply('❌ Format: USER_ID AMOUNT');
         }
-        await ctx.reply(`✅ Sent to ${sent} users (${failed} failed)`);
+        adminSessions.delete(userId);
+        return;
+    }
+    
+    if (adminSession?.step === 'broadcasting' && isAdmin(userId)) {
+        await ctx.reply(`📢 Broadcasting to ${userCache.cache.size} users...`);
+        const result = await broadcastToAllUsers(messageText);
+        await ctx.reply(`✅ Broadcast sent to ${result.sent} users (${result.failed} failed)`);
         adminSessions.delete(userId);
         return;
     }
@@ -1030,9 +1291,22 @@ bot.on('text', async (ctx) => {
         if (isValidBEP20(messageText)) {
             await updateUser(userId, { walletAddress: messageText }, true);
             withdrawSessions.delete(userId);
-            await ctx.reply(`✅ Wallet saved!\n\n<code>${messageText}</code>`, { parse_mode: 'HTML', reply_markup: getMainKeyboard() });
+            const user = await getUser(userId);
+            await ctx.reply(`✅ Wallet saved!\n\n<code>${messageText}</code>\n\nYou can now withdraw.`, { parse_mode: 'HTML', reply_markup: getMainKeyboard(userId) });
         } else {
-            await ctx.reply('❌ Invalid BEP20 address. Send a valid address starting with 0x...', { parse_mode: 'HTML' });
+            await ctx.reply('❌ Invalid BEP20 address. Send address starting with 0x...', { parse_mode: 'HTML' });
+        }
+        return;
+    }
+    
+    if (session?.step === 'waitingForWalletUpdate') {
+        if (isValidBEP20(messageText)) {
+            await updateUser(userId, { walletAddress: messageText }, true);
+            withdrawSessions.delete(userId);
+            const user = await getUser(userId);
+            await ctx.reply(`✅ Wallet updated!\n\n<code>${messageText}</code>`, { parse_mode: 'HTML', reply_markup: getMainKeyboard(userId) });
+        } else {
+            await ctx.reply('❌ Invalid BEP20 address.', { parse_mode: 'HTML' });
         }
         return;
     }
@@ -1043,7 +1317,7 @@ bot.on('text', async (ctx) => {
         const balance = user?.balance || 0;
         
         if (isNaN(amount) || amount < APP_CONFIG.minWithdrawUSDT || amount > APP_CONFIG.maxWithdrawUSDT || amount > balance) {
-            await ctx.reply(`❌ Invalid. Min: ${APP_CONFIG.minWithdrawUSDT}, Max: ${APP_CONFIG.maxWithdrawUSDT}, Your balance: ${formatUSD(balance)}`, { parse_mode: 'HTML' });
+            await ctx.reply(`❌ Invalid. Min: ${APP_CONFIG.minWithdrawUSDT}, Max: ${APP_CONFIG.maxWithdrawUSDT}, Balance: ${formatUSD(balance)}`, { parse_mode: 'HTML' });
             return;
         }
         
@@ -1052,11 +1326,14 @@ bot.on('text', async (ctx) => {
         const keyboard = {
             inline_keyboard: [
                 [{ text: '✅ CONFIRM', callback_data: 'confirm_withdraw' }],
-                [{ text: '🔙 BACK', callback_data: 'back_to_withdraw' }]
+                [{ text: '🔙 BACK', callback_data: 'back_to_menu' }]
             ]
         };
         
-        await ctx.reply(`Confirm withdrawal:\n\nAmount: ${formatUSD(amount)}`, { parse_mode: 'HTML', reply_markup: keyboard });
+        await ctx.reply(
+            `✅ CONFIRM WITHDRAWAL\n\nAmount: ${formatUSD(amount)}\nWallet: <code>${user.walletAddress.substring(0, 10)}...${user.walletAddress.substring(38)}</code>`,
+            { parse_mode: 'HTML', reply_markup: keyboard }
+        );
         return;
     }
 });
@@ -1074,7 +1351,14 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', (req, res) => {
-    res.json({ status: 'alive', timestamp: Date.now(), users: smartCache.getStats().cacheSize });
+    const cacheStats = userCache.getStats();
+    res.json({ 
+        status: 'alive', 
+        timestamp: Date.now(), 
+        users: cacheStats.cacheSize,
+        firebase: !!db,
+        cache: cacheStats
+    });
 });
 
 app.get('/api/ping', (req, res) => {
@@ -1090,49 +1374,77 @@ app.get('/api/config', (req, res) => {
     });
 });
 
+app.get('/api/user/:userId', async (req, res) => {
+    try {
+        const user = await getUser(req.params.userId);
+        if (!user) return res.json({ success: false, error: 'User not found' });
+        res.json({ success: true, user: {
+            userId: user.userId,
+            userName: user.userName,
+            balance: user.balance || 0,
+            totalEarned: user.totalEarned || 0,
+            inviteCount: user.inviteCount || 0,
+            isVerified: user.isVerified || false,
+            walletAddress: user.walletAddress || null
+        }});
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 // ============================================================================
-// 15. 🚀 START
+// 15. 🚀 START BOT & SERVER
 // ============================================================================
 
 // Auto-ping every 5 minutes
 setInterval(async () => {
     try {
-        await fetch(`http://localhost:${PORT}/api/ping`);
-    } catch (e) {}
+        const response = await fetch(`http://localhost:${PORT}/api/ping`);
+        console.log(`🔄 Auto-ping at ${new Date().toISOString()}: ${response.status}`);
+    } catch (error) {
+        console.log('Auto-ping failed:', error.message);
+    }
 }, 300000);
 
 bot.launch({ dropPendingUpdates: true })
-    .then(() => console.log('🚀 Bot started'))
-    .catch(err => console.error('Bot error:', err));
+    .then(() => console.log('🚀 Daily Airdrop Bot Started Successfully!'))
+    .catch(err => console.error('❌ Bot error:', err));
 
 app.listen(PORT, () => {
+    const cacheStats = userCache.getStats();
     console.log(`
-╔════════════════════════════════════════╗
-║     DAILY AIRDROP BOT - LEGENDARY      ║
-╠════════════════════════════════════════╣
-║  Port: ${PORT}                              ║
-║  Firebase: ${db ? '✅' : '❌'}                             ║
-║  Bot: ${BOT_TOKEN ? '✅' : '❌'}                           ║
-║  Welcome: ${APP_CONFIG.welcomeBonus} USDT                   ║
-║  Referral: ${APP_CONFIG.referralBonus} USDT                 ║
-║  Min Withdraw: ${APP_CONFIG.minWithdrawUSDT} USDT           ║
-╚════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                     DAILY AIRDROP BOT - LEGENDARY EDITION                    ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  📍 Port: ${PORT}                                                              ║
+║  🔥 Firebase: ${db ? '✅ Connected' : '❌ Disconnected'}                                             ║
+║  👑 Admin ID: ${ADMIN_ID ? '✅ Configured' : '❌ Missing'}                                            ║
+║  🤖 Bot Token: ${BOT_TOKEN ? '✅ Configured' : '❌ Missing'}                                           ║
+║  📦 Cache: ${cacheStats.cacheSize} users (${cacheStats.dirtyCount} dirty)                               ║
+║  🎯 Cache Hit Rate: ${cacheStats.hitRate}                                                          ║
+║  🔄 Periodic Sync: Every ${APP_CONFIG.syncInterval / 3600000} hour(s)                                    ║
+║  🎁 Welcome Bonus: ${APP_CONFIG.welcomeBonus} USDT                                           ║
+║  👥 Referral Bonus: ${APP_CONFIG.referralBonus} USDT                                            ║
+║  💎 Min Withdraw: ${APP_CONFIG.minWithdrawUSDT} USDT                                              ║
+║  💎 Max Withdraw: ${APP_CONFIG.maxWithdrawUSDT} USDT                                              ║
+║  ✨ Withdrawals: AUTO-APPROVED (No Cooldown)                                                   ║
+║  🛡️ Rate Limit: ${APP_CONFIG.rateLimitMax} req/${APP_CONFIG.rateLimitWindow / 1000}s                        ║
+╚══════════════════════════════════════════════════════════════════════════════╝
     `);
 });
 
 // Graceful shutdown
-process.once('SIGINT', async () => {
-    console.log('Shutting down...');
-    await smartCache.syncDirtyToFirebase(db);
+async function gracefulShutdown() {
+    console.log('🛑 Shutting down gracefully...');
+    console.log('💾 Saving all dirty users to Firebase...');
+    await userCache.syncAllToFirebase(db);
+    console.log('✅ All data saved. Goodbye!');
     process.exit(0);
-});
+}
 
-process.once('SIGTERM', async () => {
-    console.log('Shutting down...');
-    await smartCache.syncDirtyToFirebase(db);
-    process.exit(0);
-});
+process.once('SIGINT', gracefulShutdown);
+process.once('SIGTERM', gracefulShutdown);
 
 // ============================================================================
-// END
+// END OF FILE 🎯
 // ============================================================================
