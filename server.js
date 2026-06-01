@@ -603,11 +603,35 @@ async function createWithdrawalRequest(userId, amount, walletAddress) {
         });
         await updateUser(userId, { withdrawals: userWithdrawals }, true);
 
+        // ✅ Professional withdrawal notification to admin group
         if (WITHDRAWAL_GROUP_ID) {
-            await bot.telegram.sendMessage(WITHDRAWAL_GROUP_ID,
-                `💸 NEW WITHDRAWAL\n\nUser: ${escapeHtml(user.userName)}\nID: ${userId}\nAmount: ${formatUSD(amount)}\nWallet: ${walletAddress}\nRequest ID: ${requestId}`,
-                { parse_mode: 'HTML' }
-            ).catch(() => {});
+            const referralCount = user.inviteCount || 0;
+            
+            const message = `
+╔════════════════════════════════════════╗
+║       💸 NEW WITHDRAWAL REQUEST        ║
+╠════════════════════════════════════════╣
+║                                        ║
+║  👤 User: ${escapeHtml(user.userName)}
+║  🆔 ID: <code>${userId}</code>
+║  👥 Referrals: ${referralCount}
+║                                        ║
+║  💰 Amount: ${formatUSD(amount)}
+║  💳 Wallet:
+║  <code>${walletAddress}</code>
+║                                        ║
+║  🆔 Request ID:
+║  <code>${requestId}</code>
+║                                        ║
+║  ✅ Status: Auto-approved
+║  📌 Action: Send funds manually
+║                                        ║
+╚════════════════════════════════════════╝
+            `;
+            
+            await bot.telegram.sendMessage(WITHDRAWAL_GROUP_ID, message, { parse_mode: 'HTML' }).catch((err) => {
+                console.error('Failed to send withdrawal notification:', err.message);
+            });
         }
 
         console.log(`✅ Withdrawal request created: ${requestId} for ${userId}`);
