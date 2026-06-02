@@ -864,9 +864,22 @@ bot.hears('💸 WITHDRAW', async (ctx) => {
     if (!user) return;
     
     const isVerified = await isUserVerifiedInChannels(userId);
-    if (!isVerified) {
-        return ctx.reply('⚠️ You must verify channels first.', { parse_mode: 'HTML' });
+if (!isVerified) {
+    const missing = await getMissingChannels(userId, true);
+    let list = '';
+    const keyboard = { inline_keyboard: [] };
+    
+    for (const ch of missing) {
+        list += `• ${ch.name}\n`;
+        keyboard.inline_keyboard.push([{ text: `📢 Join ${ch.name}`, url: `https://t.me/${ch.username.substring(1)}` }]);
     }
+    
+    keyboard.inline_keyboard.push([{ text: '🔄 VERIFY AGAIN', callback_data: 'verify_membership' }]);
+    
+    const message = `⚠️ MISSING CHANNELS\n\nYou are not a member of:\n\n${list}\n\nPlease join all channels and try again.`;
+    
+    return ctx.reply(message, { parse_mode: 'HTML', reply_markup: keyboard });
+}
     
     if (!user.walletAddress) {
         await ctx.reply(
